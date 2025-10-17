@@ -1,0 +1,43 @@
+menu "WIFI Switch Manager Configuration"
+
+
+    
+config REST_SWITCH
+    int "set the rest switch"
+    default 2
+    range 1 10
+    help
+        Defines the rest switch for restarting the device.
+
+config TIME_FOR_REST_SWITCH
+    int "set the time rest switch in sec"
+    default 5
+    range 1 1000
+    help
+        Defines the time rest switch for restarting the device.
+
+config MIN_DELAY_AWAY_MODE
+    int "min delay in sec"
+    default 3600
+    range 1 999999
+    help
+        Defines the minimum delay for away mode.
+config MAX_DELAY_AWAY_MODE
+    int "max delay in sec"
+    default 10800
+    range 1 999999
+    help
+        Defines the maximum delay for away mode.
+
+config FIRMWARE_VERSION
+    string "firmware version"
+    default "1.2.0"
+    help
+        Defines the firmware version.
+config API_VERSION
+    string "api version"
+    default "1.0.0"
+    help
+        Defines the api version for the cloud.
+
+endmenu

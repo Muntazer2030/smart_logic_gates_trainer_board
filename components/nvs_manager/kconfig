@@ -1,0 +1,25 @@
+menu "NVS Manager Configuration"
+
+config NVS_NAMESPACE
+    string "NVS Storage Namespace"
+    default "storage"
+    help
+        This defines the namespace used for storing data in NVS.
+config WIFI_NAMESPACE
+    string "WIFI_CONFIG NVS Storage Namespace"
+    default "wifi_config"
+    help
+        This defines the namespace used for WIFI_CONFIG (ssid, passwod) in NVS.
+config DEVICE_DATA_NAMESPACE
+    string "DEVICE_DATA NVS Storage Namespace"
+    default "device_data"
+    help
+        This defines the namespace used for DEVICE_DATA in NVS.
+config NVS_MAX_STRING_LENGTH
+    int "Maximum String Length"
+    default 2048
+    range 1 4096
+    help
+        Defines the maximum length of strings that can be stored in NVS.
+
+endmenu

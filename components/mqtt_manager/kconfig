@@ -1,0 +1,18 @@
+menu "MQTT Manager Configuration"
+
+    config MQTT_ENDPOINT
+        string "MQTT Endpoint"
+        default "mqtt.lygoiq.com"
+        help
+            This defines the MQTT endpoint used for MQTT.
+
+    config MQTT_ENDPOINT_PORT
+        int "MQTT Endpoint PORT"
+        default 8883
+        help
+            This defines the MQTT endpoint port used for MQTT.
+    
+    
+    
+    endmenu
+    
