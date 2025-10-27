@@ -149,14 +149,15 @@ void mqtt_app_start(const char *cert, const char *key, const char *uuid, const c
 
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker = {
-            .address.hostname = CONFIG_MQTT_ENDPOINT,
-            .address.port = CONFIG_MQTT_ENDPOINT_PORT,
+            .address.hostname = "broker.emqx.io",
+            .address.port = 1883,
           //  .verification.certificate = (const char *)server_cert_pem_start,
             //.address.transport = MQTT_TRANSPORT_OVER_SSL
+            .address.transport = MQTT_TRANSPORT_OVER_TCP
         },
 
         .credentials = {
-            .client_id = uuid,
+            .client_id = "sokeoifkoeskiofkjo",
            // .authentication.certificate = (const char *)cert,
            // .authentication.key = (const char *)key,
         },
