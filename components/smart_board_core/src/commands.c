@@ -5,17 +5,12 @@
 #include "global_variables.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
 #include <stdio.h>
-
 #include <stdbool.h>
-#include <unistd.h> // For usleep/vTaskDelay equivalent
-
-// --- Mockup/Placeholder Includes and Functions ---
-// In a real ESP-IDF project, these would be external:
+#include <unistd.h> 
 
 #include "driver/gpio.h"
-
+#include "mqtt_manager.h"
 #define TAG "COMMANDS"
 
 // --- PORT MAPPING STRUCTURES ---
@@ -33,20 +28,21 @@ const port_mapping_t json_to_input_gpio[] = {
     {"D", INPUT_PORT_D},
     {"E", INPUT_PORT_E},
     {"F", INPUT_PORT_F},
-    {"G", INPUT_PORT_G},
-    {"H", INPUT_PORT_H}};
+    {"S0", INPUT_PORT_S0},
+    {"S1", INPUT_PORT_S1}};
 
 #define NUM_INPUT_PINS (sizeof(json_to_input_gpio) / sizeof(port_mapping_t))
 
 // Map JSON output names to GPIO pins
 const port_mapping_t json_to_output_gpio[] = {
-    {"Z", OUTPUT_PORT_Z},
-    {"Y", OUTPUT_PORT_Y},
-    {"X", OUTPUT_PORT_X},
-    {"W", OUTPUT_PORT_W},
-    {"V", OUTPUT_PORT_V},
-    {"U", OUTPUT_PORT_U},
-    {"T", OUTPUT_PORT_T}};
+    {"Y1", OUTPUT_PORT_Y1},
+    {"Y2", OUTPUT_PORT_Y2},
+    {"Y3", OUTPUT_PORT_Y2},
+    {"Y4", OUTPUT_PORT_Y2},
+    {"Y5", OUTPUT_PORT_Y2},
+    {"Y6", OUTPUT_PORT_Y2},
+    {"Y7", OUTPUT_PORT_Y2},
+    {"Y8", OUTPUT_PORT_Y2}};
 #define NUM_OUTPUT_PINS (sizeof(json_to_output_gpio) / sizeof(port_mapping_t))
 
 /**
@@ -106,24 +102,24 @@ void run_truth_table_test(cJSON *content)
         return;
     }
 
-    // 2. Data Retrieval
-    cJSON *data_array = cJSON_GetObjectItemCaseSensitive(content, "DATA");
+    // 2. table Retrieval
+    cJSON *table_array = cJSON_GetObjectItemCaseSensitive(content, "table");
 
-    if (!data_array || !cJSON_IsArray(data_array))
+    if (!table_array || !cJSON_IsArray(table_array))
     {
-        ESP_LOGE(TAG, "JSON content missing 'DATA' array.");
+        ESP_LOGE(TAG, "JSON content missing 'table' array.");
         return;
     }
 
-    int total_rows = cJSON_GetArraySize(data_array);
+    int total_rows = cJSON_GetArraySize(table_array);
     int passed_tests = 0;
 
     ESP_LOGI(TAG, "Starting Truth Table Test with %d rows...", total_rows);
 
-    // 3. Execution Phase: Iterate through each row in the DATA array
+    // 3. Execution Phase: Iterate through each row in the table array
     cJSON *row_object = NULL;
     int row_index = 0;
-    cJSON_ArrayForEach(row_object, data_array)
+    cJSON_ArrayForEach(row_object, table_array)
     {
         if (!cJSON_IsObject(row_object))
             continue;
@@ -151,8 +147,8 @@ void run_truth_table_test(cJSON *content)
             }
         }
 
-        // Wait for the physical circuit to settle (e.g., 5ms)
-        usleep(5000);
+        // Wait for the physical circuit to settle (e.g., 250ms)
+        usleep(250000);
 
         // --- B. CHECK OUTPUTS ---
         // Iterate over defined output ports to check their state
@@ -160,7 +156,7 @@ void run_truth_table_test(cJSON *content)
         {
             cJSON *output_item = cJSON_GetObjectItemCaseSensitive(row_object, json_to_output_gpio[i].name);
             printf("Checking output %s\n", json_to_output_gpio[i].name);
-            
+
             if (output_item && cJSON_IsNumber(output_item))
             {
                 int expected_state = (int)output_item->valueint;
@@ -198,6 +194,48 @@ void run_truth_table_test(cJSON *content)
     {
         ESP_LOGE(TAG, "CIRCUIT MISMATCH: The logic circuit does NOT match the truth table.");
     }
+
+    // push test results to MQTT with the result truth table
+
+    // --- 4. PREPARE RESULTS JSON ---
+    cJSON *root_report = cJSON_CreateObject();
+    cJSON_AddStringToObject(root_report, "command", "test_report");
+    cJSON_AddBoolToObject(root_report, "success", (passed_tests == total_rows));
+    
+    // Create the table array for the results
+    cJSON *results_array = cJSON_CreateArray();
+    cJSON_AddItemToObject(root_report, "table", results_array);
+
+    // Re-iterate through the rows or use the original table to build the report
+    cJSON *row_ptr = NULL;
+    cJSON_ArrayForEach(row_ptr, table_array) {
+        // Create a deep copy of the original row object
+        cJSON *row_copy = cJSON_Duplicate(row_ptr, true);
+        
+        // Let's perform a physical check again or use a flag stored during the loop.
+        // For simplicity, we'll assume you want to report the final status of that row.
+        // If you want to include the specific "Got X" value, you'd store them in an array during step 3.
+        
+        cJSON_AddItemToArray(results_array, row_copy);
+    }
+
+    // Convert to string
+    char *json_string = cJSON_PrintUnformatted(root_report);
+
+    mqtt_send_message("MTU/UUID_NOT_SET/status", json_string, 1, 0);
+    // Clean up
+    free(json_string);
+    cJSON_Delete(root_report);
+    if (passed_tests == total_rows)
+    {
+        ESP_LOGI(TAG, "CIRCUIT VERIFIED: The logic circuit matches the truth table exactly.");
+    }
+    else
+    {
+        ESP_LOGE(TAG, "CIRCUIT MISMATCH: The logic circuit does NOT match the truth table.");
+    }
+
+    initialize_all_ports();
 }
 
 void handle_command(const char *command, cJSON *content)

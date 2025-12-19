@@ -11,19 +11,19 @@
 #define INPUT_PORT_D 4
 #define INPUT_PORT_E 16
 #define INPUT_PORT_F 17
-#define INPUT_PORT_G 5
-#define INPUT_PORT_H 18
+#define INPUT_PORT_S0 5
+#define INPUT_PORT_S1 18
 
 
 
-#define OUTPUT_PORT_Z 12
-#define OUTPUT_PORT_Y 14
-#define OUTPUT_PORT_X 27
-#define OUTPUT_PORT_W 26
-#define OUTPUT_PORT_V 25
-#define OUTPUT_PORT_U 33
-#define OUTPUT_PORT_T 32
-
+#define OUTPUT_PORT_Y1 12
+#define OUTPUT_PORT_Y2 14
+#define OUTPUT_PORT_Y3 27
+#define OUTPUT_PORT_Y4 26
+#define OUTPUT_PORT_Y5 25
+#define OUTPUT_PORT_Y6 33
+#define OUTPUT_PORT_Y7 32
+#define OUTPUT_PORT_Y8 35
 
 
 

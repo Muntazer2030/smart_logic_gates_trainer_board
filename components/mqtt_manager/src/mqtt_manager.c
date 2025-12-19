@@ -149,7 +149,7 @@ void mqtt_app_start(const char *cert, const char *key, const char *uuid, const c
 
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker = {
-            .address.hostname = "broker.emqx.io",
+            .address.hostname = "test.mosquitto.org",
             .address.port = 1883,
           //  .verification.certificate = (const char *)server_cert_pem_start,
             //.address.transport = MQTT_TRANSPORT_OVER_SSL

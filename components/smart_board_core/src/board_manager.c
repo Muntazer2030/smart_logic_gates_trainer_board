@@ -38,7 +38,7 @@ void init_mqtt(void)
     mqtt_set_message_callback(message_handler);
     mqtt_set_connect_callback(subscribe_to_topics);
     // get_device_data(cert, key, uuid); // reading the saved data from device data partition
-    const char status_topic[100];
+    char status_topic[100];
     snprintf(status_topic, sizeof(status_topic), "MTU/%s/device/status", uuid);
     mqtt_app_start(cert, key, uuid, status_topic);
 }
