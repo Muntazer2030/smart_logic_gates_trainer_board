@@ -26,14 +26,24 @@ bool check_output_port(int output_port, int state)
 }
 
 
+// This function initializes pins meant to READ signals
 void init_ports(int port)
 {
-    gpio_set_direction(port, GPIO_MODE_INPUT);
+    gpio_reset_pin(port);                      // Clear previous config
+    gpio_set_direction(port, GPIO_MODE_INPUT); // Set as Input
+    gpio_set_pull_mode(port, GPIO_PULLDOWN_ONLY); // Pull to GND by default
 }
+
+// This function initializes pins meant to SEND signals (Outputs)
 void init_input_port(int port)
 {
-
     gpio_reset_pin(port);
     gpio_set_direction(port, GPIO_MODE_OUTPUT);
-    gpio_set_level(port, 0);
+    gpio_set_level(port, 0); // Start at 0V
+    // Note: Pull-ups/downs are usually disabled for outputs
+    gpio_set_pull_mode(port, GPIO_PULLDOWN_ONLY); 
 }
+
+
+
+

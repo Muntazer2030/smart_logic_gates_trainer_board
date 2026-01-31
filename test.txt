@@ -1,0 +1,7 @@
+
+m.l 200 "alisaad" - > "ilisiid"
+a = 61,    i = 69
+
+
+
+ax,bx,cx,dx,si,di,sp,bp,

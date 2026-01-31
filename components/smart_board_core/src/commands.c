@@ -48,7 +48,7 @@ const port_mapping_t json_to_output_gpio[] = {
 /**
  * @brief Initializes all logic ports (Inputs as OUTPUTs, Outputs as INPUTs).
  */
-static void initialize_all_ports()
+void initialize_all_ports()
 {
     ESP_LOGI(TAG, "Initializing all logic board ports...");
 
@@ -147,8 +147,8 @@ void run_truth_table_test(cJSON *content)
             }
         }
 
-        // Wait for the physical circuit to settle (e.g., 250ms)
-        usleep(250000);
+        // Wait for the physical circuit to settle (e.g., 500ms)
+        usleep(500000);
 
         // --- B. CHECK OUTPUTS ---
         // Iterate over defined output ports to check their state
