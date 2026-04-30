@@ -16,7 +16,7 @@ void test_all_pins()
     printf("Initializing Pins...\n");
 
     // Initialize every pin one by one
-    for (int i = 0; i < 16; i++)
+    for (int i = 0; i < sizeof(all_pins) / sizeof(all_pins[0]); i++)
     {
         gpio_reset_pin(all_pins[i]);
         gpio_set_direction(all_pins[i], GPIO_MODE_OUTPUT);
@@ -24,7 +24,7 @@ void test_all_pins()
         gpio_set_level(all_pins[i], 0);
     }
 
-    for (int i = 0; i < 16; i++)
+    for (int i = 0; i < sizeof(all_pins) / sizeof(all_pins[0]); i++)
     {
         printf("Testing Pin: %d\n", all_pins[i]);
 
@@ -34,14 +34,16 @@ void test_all_pins()
         gpio_set_level(all_pins[i], 0); // Turn OFF
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-    printf("Cycle complete. Restarting...\n");
+    initialize_all_ports();
+    vTaskDelete(NULL);
 }
 
 void app_main(void)
 {
-    test_all_pins();
+    
+     xTaskCreate(test_all_pins, "test_all_pins", 2048, NULL, 5, NULL);
     init_nvs();
-    initialize_all_ports();
+    
     set_wifi_connected_callback(init_mqtt);
     connect_to_wifi((uint8_t *)ssid, (uint8_t *)pass);
 }

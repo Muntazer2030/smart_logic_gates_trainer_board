@@ -29,9 +29,15 @@ bool check_output_port(int output_port, int state)
 // This function initializes pins meant to READ signals
 void init_ports(int port)
 {
-    gpio_reset_pin(port);                      // Clear previous config
-    gpio_set_direction(port, GPIO_MODE_INPUT); // Set as Input
-    gpio_set_pull_mode(port, GPIO_PULLDOWN_ONLY); // Pull to GND by default
+    gpio_reset_pin(port);
+    gpio_set_direction(port, GPIO_MODE_INPUT);
+
+    // GPIO 34-39 do not support internal pull-up/pull-down
+    if (port < 34) {
+        gpio_set_pull_mode(port, GPIO_PULLDOWN_ONLY);
+    } else {
+        ESP_LOGW("GPIO", "Pin %d does not support internal pull-down. External resistor required.", port);
+    }
 }
 
 // This function initializes pins meant to SEND signals (Outputs)

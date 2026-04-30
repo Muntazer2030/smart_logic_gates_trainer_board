@@ -92,7 +92,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
     case MQTT_EVENT_SUBSCRIBED:
         ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
 
-        mqtt_send_message(status_topic, "{\"status\": \"online\"}", 1, 1);
+        mqtt_send_message(status_topic, "Online", 1, 1);
 
         break;
 
@@ -149,7 +149,7 @@ void mqtt_app_start(const char *cert, const char *key, const char *uuid, const c
 
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker = {
-            .address.hostname = "test.mosquitto.org",
+            .address.hostname = "broker.emqx.io",
             .address.port = 1883,
           //  .verification.certificate = (const char *)server_cert_pem_start,
             //.address.transport = MQTT_TRANSPORT_OVER_SSL
@@ -164,14 +164,14 @@ void mqtt_app_start(const char *cert, const char *key, const char *uuid, const c
         .network.timeout_ms = 5000,
         .network.reconnect_timeout_ms = 4000,
         .session.message_retransmit_timeout = 5000,
-        .session.keepalive = 5,
+        .session.keepalive = 10,
         .session.disable_keepalive = false,
         .session.disable_clean_session = false,
 
         .session.last_will = {
             .topic = status_topic,
-            .msg = "{\"status\": \"offline\"}",
-            .msg_len = strlen("{\"status\": \"offline\"}"),
+            .msg = "Offline",
+            .msg_len = strlen("Offline"),
 
             .qos = 1,
             .retain = 1,

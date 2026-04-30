@@ -22,7 +22,7 @@
 #define OUTPUT_PORT_Y4 26
 #define OUTPUT_PORT_Y5 25
 #define OUTPUT_PORT_Y6 33
-#define OUTPUT_PORT_Y7 35
+#define OUTPUT_PORT_Y7 13
 #define OUTPUT_PORT_Y8 32
 
 

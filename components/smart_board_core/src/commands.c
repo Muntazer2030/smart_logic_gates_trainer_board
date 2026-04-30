@@ -37,12 +37,12 @@ const port_mapping_t json_to_input_gpio[] = {
 const port_mapping_t json_to_output_gpio[] = {
     {"Y1", OUTPUT_PORT_Y1},
     {"Y2", OUTPUT_PORT_Y2},
-    {"Y3", OUTPUT_PORT_Y2},
-    {"Y4", OUTPUT_PORT_Y2},
-    {"Y5", OUTPUT_PORT_Y2},
-    {"Y6", OUTPUT_PORT_Y2},
-    {"Y7", OUTPUT_PORT_Y2},
-    {"Y8", OUTPUT_PORT_Y2}};
+    {"Y3", OUTPUT_PORT_Y3},
+    {"Y4", OUTPUT_PORT_Y4},
+    {"Y5", OUTPUT_PORT_Y5},
+    {"Y6", OUTPUT_PORT_Y6},
+    {"Y7", OUTPUT_PORT_Y7},
+    {"Y8", OUTPUT_PORT_Y8}};
 #define NUM_OUTPUT_PINS (sizeof(json_to_output_gpio) / sizeof(port_mapping_t))
 
 /**
@@ -147,8 +147,8 @@ void run_truth_table_test(cJSON *content)
             }
         }
 
-        // Wait for the physical circuit to settle (e.g., 500ms)
-        usleep(500000);
+        // Wait for the physical circuit to settle (e.g., 400ms)
+        usleep(400000);
 
         // --- B. CHECK OUTPUTS ---
         // Iterate over defined output ports to check their state
@@ -222,7 +222,7 @@ void run_truth_table_test(cJSON *content)
     // Convert to string
     char *json_string = cJSON_PrintUnformatted(root_report);
 
-    mqtt_send_message("MTU/UUID_NOT_SET/status", json_string, 1, 0);
+    mqtt_send_message("MTU/BOARD_001/status", json_string, 1, 0);
     // Clean up
     free(json_string);
     cJSON_Delete(root_report);

@@ -17,14 +17,12 @@
 
 char *cert = NULL;
 char *key = NULL;
-char *uuid = "UUID_NOT_SET";
+char *uuid = "BOARD_001";
 
 void message_handler(const char *topic, const char *payload)
 {
     ESP_LOGI(TAG, "Message received: Topic: %s, Payload: %s", topic, payload);
-    char topic_and_payload[100] = {0}; // Buffer to hold topic and payload
-    snprintf(topic_and_payload, sizeof(topic_and_payload), "%s: %s", topic, payload);
-    mqtt_send_message("masseges", topic_and_payload, 1, 0); // Echo the message back
+    
     char command[30] = {0};
     cJSON *content = NULL;
 
@@ -37,7 +35,6 @@ void init_mqtt(void)
 {
     mqtt_set_message_callback(message_handler);
     mqtt_set_connect_callback(subscribe_to_topics);
-    // get_device_data(cert, key, uuid); // reading the saved data from device data partition
     char status_topic[100];
     snprintf(status_topic, sizeof(status_topic), "MTU/%s/device/status", uuid);
     mqtt_app_start(cert, key, uuid, status_topic);
