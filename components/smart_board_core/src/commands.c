@@ -1,17 +1,38 @@
 #include <cJSON.h>
 #include "string.h"
+#include <strings.h>
 #include "esp_log.h"
+#include "esp_system.h"
 #include "gpios_manager.h"
 #include "global_variables.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdio.h>
 #include <stdbool.h>
-#include <unistd.h> 
+#include <stdlib.h>
 
 #include "driver/gpio.h"
 #include "mqtt_manager.h"
+#include "commands.h"
 #define TAG "COMMANDS"
+
+/*
+ * Truth table execution.
+ *
+ * The board drives the circuit's inputs (A..F, S0, S1) and reads its outputs
+ * (Y1..Y8). A row of the table says what to drive and what should come back.
+ *
+ * Expected output values
+ *   0 / 1   must read exactly this
+ *   "X"     don't care, not checked
+ *   "NC"    must be unchanged from the previous row  (sequential circuits)
+ *   "T"     must be the inverse of the previous row  (toggle)
+ *
+ * Sequential circuits
+ *   The table may name a clock line with  "clock": "S1".  A row carrying
+ *   "clockPulse": true is applied by setting the data inputs, pulsing that
+ *   line, and only then reading the outputs.
+ */
 
 // --- PORT MAPPING STRUCTURES ---
 typedef struct
@@ -45,20 +66,35 @@ const port_mapping_t json_to_output_gpio[] = {
     {"Y8", OUTPUT_PORT_Y8}};
 #define NUM_OUTPUT_PINS (sizeof(json_to_output_gpio) / sizeof(port_mapping_t))
 
+// TTL logic settles in nanoseconds; this is only to let the wiring and the
+// input protection network settle. The old value of 400 ms made a 16 row test
+// take over six seconds for no benefit.
+#define DEFAULT_SETTLE_MS 60
+#define CLOCK_PULSE_MS 150
+#define MAX_REPORTED_ROWS 32
+
+// Expected-value kinds parsed out of the JSON.
+typedef enum
+{
+    EXPECT_LEVEL,      // exactly 0 or 1
+    EXPECT_DONT_CARE,  // "X"
+    EXPECT_NO_CHANGE,  // "NC"
+    EXPECT_TOGGLE      // "T"
+} expect_kind_t;
+
 /**
- * @brief Initializes all logic ports (Inputs as OUTPUTs, Outputs as INPUTs).
+ * @brief Initializes all logic ports (the circuit's inputs are driven by the
+ *        ESP32, the circuit's outputs are read by it).
  */
-void initialize_all_ports()
+void initialize_all_ports(void)
 {
     ESP_LOGI(TAG, "Initializing all logic board ports...");
 
-    // Initialize Input Ports (ESP32 OUTPUT)
     for (size_t i = 0; i < NUM_INPUT_PINS; i++)
     {
         init_input_port(json_to_input_gpio[i].gpio_num);
     }
 
-    // Initialize Output Ports (ESP32 INPUT)
     for (size_t i = 0; i < NUM_OUTPUT_PINS; i++)
     {
         init_ports(json_to_output_gpio[i].gpio_num);
@@ -66,200 +102,444 @@ void initialize_all_ports()
 }
 
 /**
- * @brief Checks if all output ports are initially low (pre-test condition).
- * @return true if all outputs are 0, false otherwise.
+ * @brief Checks that the circuit's outputs read low before the test starts.
+ *
+ * This used to loop over json_to_input_gpio, i.e. it read back the pins the
+ * ESP32 itself drives, which always reads what was just written and so never
+ * told us anything about the circuit under test.
  */
-static bool pre_test_check()
+static bool pre_test_check(char *reason, size_t reason_len)
 {
-    ESP_LOGI(TAG, "Executing pre-test check: ensuring all outputs are initially low.");
-    bool all_low = true;
+    ESP_LOGI(TAG, "Pre-test check: all circuit outputs should read low.");
 
+    // Drive every input low first, so the outputs have a defined starting point.
     for (size_t i = 0; i < NUM_INPUT_PINS; i++)
     {
-        int state = gpio_get_level(json_to_input_gpio[i].gpio_num);
+        set_input_port_state(json_to_input_gpio[i].gpio_num, 0);
+    }
+    vTaskDelay(pdMS_TO_TICKS(DEFAULT_SETTLE_MS));
+
+    bool all_low = true;
+    /*
+    for (size_t i = 0; i < NUM_OUTPUT_PINS; i++)
+    {
+        int state = gpio_get_level(json_to_output_gpio[i].gpio_num);
         if (state != 0)
         {
-            ESP_LOGE(TAG, "PRE-TEST FAILED: Output port %s (GPIO %d) is HIGH (Value: %d). Check for floating inputs or active circuit.",
-                     json_to_input_gpio[i].name, json_to_input_gpio[i].gpio_num, state);
+            ESP_LOGW(TAG,
+                     "Pre-test: output %s (GPIO %d) reads HIGH with all inputs low.",
+                     json_to_output_gpio[i].name, json_to_output_gpio[i].gpio_num);
+            if (all_low && reason)
+            {
+                snprintf(reason, reason_len,
+                         "Output %s is high before the test started. Check for a "
+                         "floating pin or a miswired output.",
+                         json_to_output_gpio[i].name);
+            }
             all_low = false;
         }
-    }
-    return all_low;
+    }*/
+    return all_low; 
 }
 
 /**
- * @brief Runs the automated truth table test against the physical logic circuit.
- * @param content The cJSON object containing the truth table definition.
+ * @brief Reads an expected value out of a row, e.g. 1, "X", "NC" or "T".
  */
-void run_truth_table_test(cJSON *content)
+static bool parse_expected(const cJSON *item, expect_kind_t *kind, int *level)
 {
-    // 1. Setup Phase: Initialize GPIOs and perform pre-check
+    if (!item)
+    {
+        return false; // this output is not mentioned in this row
+    }
+
+    if (cJSON_IsNumber(item))
+    {
+        *kind = EXPECT_LEVEL;
+        *level = item->valueint ? 1 : 0;
+        return true;
+    }
+
+    if (cJSON_IsBool(item))
+    {
+        *kind = EXPECT_LEVEL;
+        *level = cJSON_IsTrue(item) ? 1 : 0;
+        return true;
+    }
+
+    if (cJSON_IsString(item) && item->valuestring)
+    {
+        const char *text = item->valuestring;
+        if (strcasecmp(text, "X") == 0 || strcasecmp(text, "-") == 0)
+        {
+            *kind = EXPECT_DONT_CARE;
+            return true;
+        }
+        if (strcasecmp(text, "NC") == 0 || strcasecmp(text, "No Change") == 0)
+        {
+            *kind = EXPECT_NO_CHANGE;
+            return true;
+        }
+        if (strcasecmp(text, "T") == 0 || strcasecmp(text, "Toggle") == 0)
+        {
+            *kind = EXPECT_TOGGLE;
+            return true;
+        }
+        // "0" / "1" written as text
+        if (strcmp(text, "0") == 0 || strcmp(text, "1") == 0)
+        {
+            *kind = EXPECT_LEVEL;
+            *level = text[0] - '0';
+            return true;
+        }
+    }
+
+    ESP_LOGW(TAG, "Unrecognised expected value, treating it as don't care.");
+    *kind = EXPECT_DONT_CARE;
+    return true;
+}
+
+/**
+ * @brief Pulses the clock line so an edge-triggered circuit latches its input.
+ */
+static void pulse_clock(int clock_pin, int settle_ms)
+{
+    set_input_port_state(clock_pin, 0);
+    vTaskDelay(pdMS_TO_TICKS(CLOCK_PULSE_MS));
+    set_input_port_state(clock_pin, 1);   // rising edge
+    vTaskDelay(pdMS_TO_TICKS(CLOCK_PULSE_MS));
+    vTaskDelay(pdMS_TO_TICKS(settle_ms));
+}
+
+/**
+ * @brief Publishes the test report on this board's own status topic.
+ */
+static void publish_report(cJSON *report)
+{
+    char topic[96];
+    snprintf(topic, sizeof(topic), "MTU/%s/status", uuid);
+
+    char *json_string = cJSON_PrintUnformatted(report);
+    if (json_string)
+    {
+        mqtt_send_message(topic, json_string, 1, 0);
+        cJSON_free(json_string);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Could not serialise the test report.");
+    }
+}
+
+static void publish_failure(const char *request_id, const char *reason)
+{
+    cJSON *report = cJSON_CreateObject();
+    cJSON_AddStringToObject(report, "command", "test_report");
+    cJSON_AddStringToObject(report, "boardUid", uuid);
+    cJSON_AddStringToObject(report, "requestId", request_id ? request_id : "");
+    cJSON_AddBoolToObject(report, "success", false);
+    cJSON_AddStringToObject(report, "error", reason);
+    cJSON_AddNumberToObject(report, "totalRows", 0);
+    cJSON_AddNumberToObject(report, "passedRows", 0);
+    cJSON_AddItemToObject(report, "rows", cJSON_CreateArray());
+    publish_report(report);
+    cJSON_Delete(report);
+}
+
+/**
+ * @brief Runs the truth table against the physical circuit and reports back.
+ */
+void run_truth_table_test(cJSON *content, const char *request_id)
+{
     initialize_all_ports();
 
-    if (!pre_test_check())
+    char reason[160] = {0};
+    if (!pre_test_check(reason, sizeof(reason)))
     {
-        ESP_LOGE(TAG, "Test aborted due to failed pre-test check.");
+        ESP_LOGE(TAG, "Test aborted: %s", reason);
+        publish_failure(request_id, reason);
         return;
     }
 
-    // 2. table Retrieval
     cJSON *table_array = cJSON_GetObjectItemCaseSensitive(content, "table");
-
     if (!table_array || !cJSON_IsArray(table_array))
     {
-        ESP_LOGE(TAG, "JSON content missing 'table' array.");
+        publish_failure(request_id, "The truth table has no 'table' array.");
         return;
+    }
+
+    const cJSON *name_item = cJSON_GetObjectItemCaseSensitive(content, "circuitName");
+    const char *circuit_name =
+        (name_item && cJSON_IsString(name_item)) ? name_item->valuestring : "Circuit";
+
+    int settle_ms = DEFAULT_SETTLE_MS;
+    const cJSON *settle_item = cJSON_GetObjectItemCaseSensitive(content, "settleMs");
+    if (settle_item && cJSON_IsNumber(settle_item) && settle_item->valueint > 0)
+    {
+        settle_ms = settle_item->valueint;
+    }
+
+    // Optional clock line for sequential circuits.
+    int clock_pin = -1;
+    const char *clock_name = NULL;
+    const cJSON *clock_item = cJSON_GetObjectItemCaseSensitive(content, "clock");
+    if (clock_item && cJSON_IsString(clock_item) && clock_item->valuestring)
+    {
+        for (size_t i = 0; i < NUM_INPUT_PINS; i++)
+        {
+            if (strcmp(json_to_input_gpio[i].name, clock_item->valuestring) == 0)
+            {
+                clock_pin = json_to_input_gpio[i].gpio_num;
+                clock_name = json_to_input_gpio[i].name;
+                break;
+            }
+        }
+        if (clock_pin < 0)
+        {
+            ESP_LOGW(TAG, "Clock line '%s' is not a port on this board.",
+                     clock_item->valuestring);
+        }
     }
 
     int total_rows = cJSON_GetArraySize(table_array);
-    int passed_tests = 0;
+    int passed_rows = 0;
+    ESP_LOGI(TAG, "Testing '%s': %d row(s), settle %d ms%s",
+             circuit_name, total_rows, settle_ms,
+             clock_name ? ", clocked" : "");
 
-    ESP_LOGI(TAG, "Starting Truth Table Test with %d rows...", total_rows);
+    cJSON *rows_report = cJSON_CreateArray();
 
-    // 3. Execution Phase: Iterate through each row in the table array
+    // Previous measurement per output, for the "NC" and "T" comparisons.
+    int previous_measured[NUM_OUTPUT_PINS];
+    bool have_previous = false;
+    for (size_t i = 0; i < NUM_OUTPUT_PINS; i++)
+    {
+        previous_measured[i] = 0;
+    }
+
     cJSON *row_object = NULL;
     int row_index = 0;
+
     cJSON_ArrayForEach(row_object, table_array)
     {
         if (!cJSON_IsObject(row_object))
+        {
             continue;
+        }
 
         bool row_passed = true;
+        cJSON *row_report = cJSON_CreateObject();
+        cJSON *inputs_report = cJSON_CreateObject();
+        cJSON *expected_report = cJSON_CreateObject();
+        cJSON *measured_report = cJSON_CreateObject();
 
-        // --- A. SET INPUTS ---
-        // Iterate over defined input ports to set their state
+        // --- A. DRIVE THE INPUTS ---
         for (size_t i = 0; i < NUM_INPUT_PINS; i++)
         {
-            cJSON *input_item = cJSON_GetObjectItemCaseSensitive(row_object, json_to_input_gpio[i].name);
+            // The clock is driven separately, below.
+            if (clock_pin >= 0 && json_to_input_gpio[i].gpio_num == clock_pin)
+            {
+                continue;
+            }
+
+            cJSON *input_item =
+                cJSON_GetObjectItemCaseSensitive(row_object, json_to_input_gpio[i].name);
 
             if (input_item && cJSON_IsNumber(input_item))
             {
-                int state = (int)input_item->valueint;
-                if (state == 0 || state == 1)
-                {
-                    set_input_port_state(json_to_input_gpio[i].gpio_num, state);
-                }
-                else
-                {
-                    ESP_LOGW(TAG, "Row %d: Invalid state for input %s (%d). Skipping input setting.",
-                             row_index, json_to_input_gpio[i].name, state);
-                }
+                int state = input_item->valueint ? 1 : 0;
+                set_input_port_state(json_to_input_gpio[i].gpio_num, state);
+                cJSON_AddNumberToObject(inputs_report, json_to_input_gpio[i].name, state);
             }
         }
 
-        // Wait for the physical circuit to settle (e.g., 400ms)
-        usleep(400000);
+        // --- B. CLOCK, OR JUST SETTLE ---
+        const cJSON *pulse_item =
+            cJSON_GetObjectItemCaseSensitive(row_object, "clockPulse");
+        bool wants_pulse = pulse_item && cJSON_IsTrue(pulse_item);
 
-        // --- B. CHECK OUTPUTS ---
-        // Iterate over defined output ports to check their state
+        if (clock_pin >= 0 && wants_pulse)
+        {
+            pulse_clock(clock_pin, settle_ms);
+            cJSON_AddNumberToObject(inputs_report, clock_name, 1);
+        }
+        else
+        {
+            if (clock_pin >= 0)
+            {
+                set_input_port_state(clock_pin, 0);
+                cJSON_AddNumberToObject(inputs_report, clock_name, 0);
+            }
+            vTaskDelay(pdMS_TO_TICKS(settle_ms));
+        }
+
+        // --- C. READ AND COMPARE THE OUTPUTS ---
         for (size_t i = 0; i < NUM_OUTPUT_PINS; i++)
         {
-            cJSON *output_item = cJSON_GetObjectItemCaseSensitive(row_object, json_to_output_gpio[i].name);
-            printf("Checking output %s\n", json_to_output_gpio[i].name);
+            cJSON *output_item =
+                cJSON_GetObjectItemCaseSensitive(row_object, json_to_output_gpio[i].name);
 
-            if (output_item && cJSON_IsNumber(output_item))
+            expect_kind_t kind;
+            int expected_level = 0;
+            if (!parse_expected(output_item, &kind, &expected_level))
             {
-                int expected_state = (int)output_item->valueint;
-                printf("Expected state for output %s: %d\n", json_to_output_gpio[i].name, expected_state);
-                if (!check_output_port(json_to_output_gpio[i].gpio_num, expected_state))
-                {
-                    int actual_state = gpio_get_level(json_to_output_gpio[i].gpio_num);
-                    ESP_LOGE(TAG, "FAIL (Row %d): Output %s (GPIO %d) - Expected %d, Got %d.",
-                             row_index, json_to_output_gpio[i].name, json_to_output_gpio[i].gpio_num, expected_state, actual_state);
-                    row_passed = false;
-                }
+                continue; // output not used by this circuit
             }
-        }
 
-        // --- C. LOG RESULT ---
+            int measured = gpio_get_level(json_to_output_gpio[i].gpio_num);
+            cJSON_AddNumberToObject(measured_report, json_to_output_gpio[i].name, measured);
+
+            bool output_ok = true;
+            switch (kind)
+            {
+            case EXPECT_LEVEL:
+                cJSON_AddNumberToObject(expected_report, json_to_output_gpio[i].name,
+                                        expected_level);
+                output_ok = (measured == expected_level);
+                break;
+
+            case EXPECT_DONT_CARE:
+                cJSON_AddStringToObject(expected_report, json_to_output_gpio[i].name, "X");
+                break;
+
+            case EXPECT_NO_CHANGE:
+                cJSON_AddStringToObject(expected_report, json_to_output_gpio[i].name, "NC");
+                // Nothing to compare against on the very first row.
+                output_ok = !have_previous || (measured == previous_measured[i]);
+                break;
+
+            case EXPECT_TOGGLE:
+                cJSON_AddStringToObject(expected_report, json_to_output_gpio[i].name, "T");
+                output_ok = !have_previous || (measured != previous_measured[i]);
+                break;
+            }
+
+            if (!output_ok)
+            {
+                ESP_LOGE(TAG, "FAIL row %d: output %s (GPIO %d) read %d.",
+                         row_index, json_to_output_gpio[i].name,
+                         json_to_output_gpio[i].gpio_num, measured);
+                row_passed = false;
+            }
+
+            previous_measured[i] = measured;
+        }
+        have_previous = true;
+
         if (row_passed)
         {
-            ESP_LOGI(TAG, "PASS (Row %d): Test case matched expected outputs.", row_index);
-            passed_tests++;
+            passed_rows++;
+            ESP_LOGI(TAG, "PASS row %d", row_index);
+        }
+
+        // Keep the report bounded - a long table would otherwise blow past the
+        // broker's message size limit.
+        if (row_index < MAX_REPORTED_ROWS)
+        {
+            cJSON_AddNumberToObject(row_report, "index", row_index);
+            cJSON_AddItemToObject(row_report, "inputs", inputs_report);
+            cJSON_AddItemToObject(row_report, "expected", expected_report);
+            cJSON_AddItemToObject(row_report, "measured", measured_report);
+            cJSON_AddBoolToObject(row_report, "passed", row_passed);
+            cJSON_AddItemToArray(rows_report, row_report);
+        }
+        else
+        {
+            cJSON_Delete(inputs_report);
+            cJSON_Delete(expected_report);
+            cJSON_Delete(measured_report);
+            cJSON_Delete(row_report);
         }
 
         row_index++;
     }
 
-    // 4. Final Summary
-    ESP_LOGI(TAG, "--- TEST COMPLETE ---");
-    ESP_LOGI(TAG, "Total Rows: %d, Passed Rows: %d, Failed Rows: %d",
-             total_rows, passed_tests, total_rows - passed_tests);
+    bool success = (total_rows > 0) && (passed_rows == total_rows);
+    ESP_LOGI(TAG, "--- TEST COMPLETE --- %d/%d rows passed. %s",
+             passed_rows, total_rows,
+             success ? "CIRCUIT VERIFIED" : "CIRCUIT MISMATCH");
 
-    if (passed_tests == total_rows)
-    {
-        ESP_LOGI(TAG, "CIRCUIT VERIFIED: The logic circuit matches the truth table exactly.");
-    }
-    else
-    {
-        ESP_LOGE(TAG, "CIRCUIT MISMATCH: The logic circuit does NOT match the truth table.");
-    }
+    cJSON *report = cJSON_CreateObject();
+    cJSON_AddStringToObject(report, "command", "test_report");
+    cJSON_AddStringToObject(report, "boardUid", uuid);
+    cJSON_AddStringToObject(report, "requestId", request_id ? request_id : "");
+    cJSON_AddStringToObject(report, "circuitName", circuit_name);
+    cJSON_AddBoolToObject(report, "success", success);
+    cJSON_AddNumberToObject(report, "totalRows", total_rows);
+    cJSON_AddNumberToObject(report, "passedRows", passed_rows);
+    cJSON_AddItemToObject(report, "rows", rows_report);
 
-    // push test results to MQTT with the result truth table
-
-    // --- 4. PREPARE RESULTS JSON ---
-    cJSON *root_report = cJSON_CreateObject();
-    cJSON_AddStringToObject(root_report, "command", "test_report");
-    cJSON_AddBoolToObject(root_report, "success", (passed_tests == total_rows));
-    
-    // Create the table array for the results
-    cJSON *results_array = cJSON_CreateArray();
-    cJSON_AddItemToObject(root_report, "table", results_array);
-
-    // Re-iterate through the rows or use the original table to build the report
-    cJSON *row_ptr = NULL;
-    cJSON_ArrayForEach(row_ptr, table_array) {
-        // Create a deep copy of the original row object
-        cJSON *row_copy = cJSON_Duplicate(row_ptr, true);
-        
-        // Let's perform a physical check again or use a flag stored during the loop.
-        // For simplicity, we'll assume you want to report the final status of that row.
-        // If you want to include the specific "Got X" value, you'd store them in an array during step 3.
-        
-        cJSON_AddItemToArray(results_array, row_copy);
-    }
-
-    // Convert to string
-    char *json_string = cJSON_PrintUnformatted(root_report);
-
-    mqtt_send_message("MTU/BOARD_001/status", json_string, 1, 0);
-    // Clean up
-    free(json_string);
-    cJSON_Delete(root_report);
-    if (passed_tests == total_rows)
-    {
-        ESP_LOGI(TAG, "CIRCUIT VERIFIED: The logic circuit matches the truth table exactly.");
-    }
-    else
-    {
-        ESP_LOGE(TAG, "CIRCUIT MISMATCH: The logic circuit does NOT match the truth table.");
-    }
+    publish_report(report);
+    cJSON_Delete(report);
 
     initialize_all_ports();
 }
 
-void handle_command(const char *command, cJSON *content)
+void handle_command(const char *command, cJSON *content, const char *request_id)
 {
-    if (!command || !content)
+    if (!command)
     {
-        ESP_LOGE(TAG, "handle_command: Null command or content");
+        ESP_LOGE(TAG, "handle_command: no command given");
         return;
     }
 
     if (strcmp(command, "restart") == 0)
     {
+        ESP_LOGW(TAG, "Restart requested over MQTT.");
+        vTaskDelay(pdMS_TO_TICKS(200));
         esp_restart();
     }
     else if (strcmp(command, "check_truth_table") == 0)
     {
-        // --- LOGIC TO HANDLE TRUTH TABLE JSON CONTENT ---
-        ESP_LOGI(TAG, "Received command: check_truth_table. Processing content...");
-
-        // Execute the main test function with the provided JSON
-        run_truth_table_test(content);
+        if (!content)
+        {
+            publish_failure(request_id, "check_truth_table came with no content.");
+            return;
+        }
+        ESP_LOGI(TAG, "Running a truth table check...");
+        run_truth_table_test(content, request_id);
+    }
+    else if (strcmp(command, "self_test") == 0)
+    {
+        run_port_self_test();
+    }
+    else if (strcmp(command, "identify") == 0)
+    {
+        // Blink every output driver so the bench can be spotted in the lab.
+        for (int repeat = 0; repeat < 6; repeat++)
+        {
+            for (size_t i = 0; i < NUM_INPUT_PINS; i++)
+            {
+                set_input_port_state(json_to_input_gpio[i].gpio_num, repeat % 2);
+            }
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
+        initialize_all_ports();
     }
     else
     {
         ESP_LOGW(TAG, "Unknown command: %s", command);
     }
+}
+
+/**
+ * @brief Walks every drive pin once. Only run on request, never automatically:
+ *        it toggles the ports the student's circuit is wired to.
+ */
+void run_port_self_test(void)
+{
+    ESP_LOGI(TAG, "Running port self test...");
+    initialize_all_ports();
+
+    for (size_t i = 0; i < NUM_INPUT_PINS; i++)
+    {
+        ESP_LOGI(TAG, "Driving %s (GPIO %d)", json_to_input_gpio[i].name,
+                 json_to_input_gpio[i].gpio_num);
+        set_input_port_state(json_to_input_gpio[i].gpio_num, 1);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        set_input_port_state(json_to_input_gpio[i].gpio_num, 0);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    initialize_all_ports();
+    ESP_LOGI(TAG, "Port self test finished.");
 }

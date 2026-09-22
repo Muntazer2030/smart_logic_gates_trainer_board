@@ -1,0 +1,4 @@
+dependencies:
+  # The MQTT client left ESP-IDF in 6.0 and lives in the component registry.
+  # The registry package also works on ESP-IDF 5.3+, so one manifest covers both.
+  espressif/mqtt: "^1.1.0"

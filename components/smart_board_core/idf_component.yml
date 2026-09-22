@@ -1,0 +1,11 @@
+dependencies:
+  # Replaces ESP-IDF's wifi_provisioning, which was removed in 6.0. Same BLE
+  # protocol, so BoardMaster's "Set up a new board" is unaffected.
+  espressif/network_provisioning: "^1.2.4"
+  # cJSON left ESP-IDF in 6.0 as well. Public, because commands.h and
+  # json_encode_decode.h expose cJSON types. network_provisioning uses the
+  # same package, so there is exactly one cJSON in the image; the copy under
+  # components/json is no longer built.
+  espressif/cjson:
+    version: "^1.7.19"
+    require: public

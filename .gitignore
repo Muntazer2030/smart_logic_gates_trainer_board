@@ -6,3 +6,6 @@ build/
 .vscode/
 .devcontainer/
 .DS_Store
+# Downloaded by the ESP-IDF component manager on the first build.
+# dependencies.lock (committed) pins the versions it fetches.
+managed_components/

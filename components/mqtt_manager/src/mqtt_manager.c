@@ -4,6 +4,7 @@
 #include "freertos/event_groups.h"
 #include "esp_log.h"
 #include "string.h"
+#include <stdlib.h>
 #include "sdkconfig.h"
 #include "mqtt_manager.h"
 #define TAG "MQTT_API"
@@ -13,6 +14,10 @@
 
 static esp_mqtt_client_handle_t mqtt_client = NULL;
 static bool mqtt_connected = false;
+
+// The broker currently in use, for logging and for mqtt_app_set_broker().
+static char s_broker_host[96] = "";
+static int s_broker_port = 0;
 static EventGroupHandle_t mqtt_event_group = NULL;
 
 
@@ -131,17 +136,76 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
         }
         break;
 
+    case MQTT_EVENT_BEFORE_CONNECT:
+        ESP_LOGI(TAG, "Connecting to MQTT broker %s:%d", s_broker_host, s_broker_port);
+        break;
+
     default:
         ESP_LOGI(TAG, "Other event id: %d", event->event_id);
         break;
     }
 }
 
-// Function to start MQTT client
-void mqtt_app_start(const char *cert, const char *key, const char *uuid, const char *status_topic_arg)
+// Points the running client at another broker, e.g. a lab host found after
+// MQTT started. The client uses it from its next connection attempt.
+// Returns false when nothing changed.
+bool mqtt_app_set_broker(const char *broker_host, int broker_port)
 {
+    if (!mqtt_client || !broker_host || !broker_host[0])
+    {
+        return false;
+    }
+    if (broker_port <= 0)
+    {
+        broker_port = 1883;
+    }
+    if (strcmp(broker_host, s_broker_host) == 0 && broker_port == s_broker_port)
+    {
+        return false;
+    }
+
+    char uri[128];
+    snprintf(uri, sizeof(uri), "mqtt://%s:%d", broker_host, broker_port);
+    if (esp_mqtt_client_set_uri(mqtt_client, uri) != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Could not switch to %s", uri);
+        return false;
+    }
+    strlcpy(s_broker_host, broker_host, sizeof(s_broker_host));
+    s_broker_port = broker_port;
+    ESP_LOGI(TAG, "MQTT broker is now %s:%d", s_broker_host, s_broker_port);
+    // Connect now rather than waiting out the reconnect back-off.
+    esp_mqtt_client_reconnect(mqtt_client);
+    return true;
+}
+
+const char *mqtt_app_broker_host(void)
+{
+    return s_broker_host;
+}
+
+// Function to start MQTT client
+void mqtt_app_start(const char *cert, const char *key, const char *uuid,
+                    const char *status_topic_arg, const char *broker_host, int broker_port)
+{
+    // Supplied by board_manager from NVS, so a board can be pointed at the
+    // lab PC without rebuilding the firmware.
+    static char host[96];
+    snprintf(host, sizeof(host), "%s",
+             (broker_host && broker_host[0]) ? broker_host : "broker.emqx.io");
+    if (broker_port <= 0) broker_port = 1883;
+    strlcpy(s_broker_host, host, sizeof(s_broker_host));
+    s_broker_port = broker_port;
+
+    free(status_topic);
     status_topic = strdup(status_topic_arg);
-    printf("Status topic: %s\n", status_topic);
+
+    // Every board must present a DIFFERENT client id. A shared literal makes
+    // the broker kick the previous board off each time another one connects,
+    // so two boards knock each other offline in a loop.
+    static char client_id[64];
+    snprintf(client_id, sizeof(client_id), "logic_board_%s", uuid ? uuid : "unknown");
+    ESP_LOGI(TAG, "MQTT %s:%d as %s (status %s)", host, broker_port, client_id, status_topic);
     if (!mqtt_event_group)
     {
         mqtt_event_group = xEventGroupCreate();
@@ -149,15 +213,15 @@ void mqtt_app_start(const char *cert, const char *key, const char *uuid, const c
 
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker = {
-            .address.hostname = "broker.emqx.io",
-            .address.port = 1883,
+            .address.hostname = host,
+            .address.port = broker_port,
           //  .verification.certificate = (const char *)server_cert_pem_start,
             //.address.transport = MQTT_TRANSPORT_OVER_SSL
             .address.transport = MQTT_TRANSPORT_OVER_TCP
         },
 
         .credentials = {
-            .client_id = "sokeoifkoeskiofkjo",
+            .client_id = client_id,
            // .authentication.certificate = (const char *)cert,
            // .authentication.key = (const char *)key,
         },
